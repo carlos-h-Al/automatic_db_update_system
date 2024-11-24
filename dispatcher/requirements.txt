@@ -1,0 +1,4 @@
+psycopg2
+openai
+python-dotenv
+# smtplib
