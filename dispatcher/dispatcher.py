@@ -3,222 +3,282 @@ from dotenv import load_dotenv
 import datetime
 import psycopg2
 import smtplib
+import logging
 import time
 import os
+
+# Set up logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('dispatcher.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 SENDER_EMAIL = os.environ.get('EMAIL')
 RECEIVER_EMAIL = os.environ.get('EMAIL')
 
+def db_connect(url):
+    """Establish database connection with error handling"""
+    try:
+        connect = psycopg2.connect(url)
+        return connect
+    except psycopg2.Error as e:
+        logger.error(f"Database connection failed: {str(e)}")
+        raise
 
-# supervise workers vitals
 def check_vitals(url):
-    print('checking vitals...')
-    ''' If heartbeat is over 2 minutes ago, consider worker dead '''
-    connect = psycopg2.connect(url)
-    cursor = connect.cursor()
+    logger.info('Starting vitals check...')
+    try:
+        connect = db_connect(url)
+        cursor = connect.cursor()
 
-    # get online workers
-    cursor.execute(f'''
-                    SELECT worker_id, heartbeat FROM vitals WHERE status != '-1'
-                    ''')
+        cursor.execute(f'SELECT worker_id, heartbeat FROM vitals WHERE status != \'-1\'')
+        all_workers_details = cursor.fetchall()
+        logger.info(f"Found {len(all_workers_details)} active workers")
 
-    all_workers_details = cursor.fetchall()
+        dead_idx = []
+        dead_workers = []
+        current_time = int(datetime.datetime.now().minute)
+        
+        for idx, (worker_id, heartbeat) in enumerate(all_workers_details):
+            old_time = int(heartbeat)
+            logger.debug(f"Checking worker {worker_id} - Last heartbeat: {old_time}, Current time: {current_time}")
 
-    dead_idx = []
-    dead_workers = []
-    # exceptions = [0, 1]  # 0 -> 58 <= x <= 59 | 1 -> x = 59, 0 <= x <= 1  
-
-    for idx, i in enumerate(all_workers_details):
-        # gets worker last heartbeat
-        old_time = int(i[1])
-        # gets current time
-        time = int(datetime.datetime.now().minute)
-
-        # offline worker logic
-        if time == 0:
-            if 58 <= old_time <= 59 or old_time == 0:
-                continue
+            # Offline worker logic with detailed logging
+            if current_time == 0:
+                if 58 <= old_time <= 59 or old_time == 0:
+                    logger.debug(f"Worker {worker_id} alive (edge case at minute 0)")
+                else:
+                    dead_idx.append(idx)
+                    logger.warning(f"Worker {worker_id} appears dead at minute 0")
+            elif current_time == 1:
+                if old_time == 59 or 0 <= old_time <= 1:
+                    logger.debug(f"Worker {worker_id} alive (edge case at minute 1)")
+                else:
+                    dead_idx.append(idx)
+                    logger.warning(f"Worker {worker_id} appears dead at minute 1")
             else:
-                dead_idx.append(idx)
-        elif time == 1:
-            if old_time == 59 or 0 <= old_time <= 1:
-                continue
-            else:
-                dead_idx.append(idx)
+                if (current_time - 2) <= old_time <= current_time:
+                    logger.debug(f"Worker {worker_id} alive (normal case)")
+                else:
+                    dead_idx.append(idx)
+                    logger.warning(f"Worker {worker_id} appears dead (normal case)")
+
+        if dead_idx:
+            for index in dead_idx:
+                worker_id = all_workers_details[index][0]
+                dead_workers.append(worker_id)
+                try:
+                    # Update vitals
+                    cursor.execute(f"UPDATE vitals SET status = '-1' WHERE worker_id = '{worker_id}'")
+                    # Update dispatcher
+                    cursor.execute(f"UPDATE dispatcher SET worker_status = 'offline' WHERE worker_id = '{worker_id}'")
+                    connect.commit()
+                    logger.info(f"Successfully marked worker {worker_id} as offline")
+                except psycopg2.Error as e:
+                    logger.error(f"Database error while updating dead worker {worker_id}: {str(e)}")
+                    connect.rollback()
+
+            return dead_workers
         else:
-            if (time - 2) <= old_time <= time:
-                continue
-            else:
-                dead_idx.append(idx)
+            logger.info("All workers are alive")
+            return 'no casualties'
 
-    # if any workers are offline, execute these lines
-    if dead_idx:
-        for index in dead_idx:
-            # append worker id
-            dead_workers.append(all_workers_details[index][0])
-            # updates database to reflect that the worker is offline
-            cursor.execute(f'''
-                            UPDATE vitals SET status = '-1' WHERE worker_id = '{all_workers_details[index][0]}'
-                            ''')
-            connect.commit()
+    except Exception as e:
+        logger.error(f"Error in check_vitals: {str(e)}", exc_info=True)
+        raise
+    finally:
+        if 'connect' in locals():
+            connect.close()
 
-            # update dispatcher task log
-            cursor.execute(f'''
-                            UPDATE dispatcher SET worker_status = 'offline' WHERE worker_id = '{all_workers_details[index][0]}'
-                            ''')
-            connect.commit()
-
-        return dead_workers
-    else:
-        return 'no casualties'
-
-
-# check for chapters to complete
 def assignments(url):
-    print('     Assigning tasks...')
-    connect = psycopg2.connect(url)
-    cursor = connect.cursor()
+    logger.info('Starting task assignment process...')
+    try:
+        connect = db_connect(url)
+        cursor = connect.cursor()
 
-    # gets uncompleted chapters id 
-    cursor.execute('''
-                    SELECT id FROM chapter_text WHERE status = '0';
-                    ''')
-    incomplete = cursor.fetchall()
+        # Get uncompleted chapters
+        cursor.execute('SELECT id FROM chapter_text WHERE status = \'0\'')
+        incomplete = cursor.fetchall()
+        logger.info(f"Found {len(incomplete)} incomplete chapters")
 
-    # checks how many workers are idle
-    cursor.execute('''
-                    SELECT worker_id FROM vitals WHERE status = '0';
-                    ''')
-    available_workers = cursor.fetchall()
+        # Get idle workers
+        cursor.execute('SELECT worker_id FROM vitals WHERE status = \'0\'')
+        available_workers = cursor.fetchall()
+        logger.info(f"Found {len(available_workers)} available workers")
 
-    # assigns tasks to workers and updates chapters status
-    for idx, worker in enumerate(available_workers):
-        cursor.execute(f'''
-        INSERT INTO dispatcher (worker_id, manga, progress_status, worker_status) VALUES ('{worker[0]}', '{incomplete[idx][0]}', '0', 'online');
-        ''')
-        connect.commit()
+        for idx, worker in enumerate(available_workers):
+            try:
+                if idx >= len(incomplete):
+                    logger.info("No more incomplete chapters to assign")
+                    break
 
-        # updates chapter_text status to in progress
-        cursor.execute(f'''
-        UPDATE chapter_text SET status = '1' WHERE id = '{incomplete[idx][0]}';
-        ''')
-        connect.commit()
+                worker_id = worker[0]
+                chapter_id = incomplete[idx][0]
+                
+                # Insert into dispatcher
+                cursor.execute(
+                    "INSERT INTO dispatcher (worker_id, manga, progress_status, worker_status) "
+                    f"VALUES ('{worker_id}', '{chapter_id}', '0', 'online')"
+                )
+                
+                # Update chapter status
+                cursor.execute(f"UPDATE chapter_text SET status = '1' WHERE id = '{chapter_id}'")
+                
+                # Update worker status
+                cursor.execute(f"UPDATE vitals SET status = '1' WHERE worker_id = '{worker_id}'")
+                
+                connect.commit()
+                logger.info(f"Successfully assigned chapter {chapter_id} to worker {worker_id}")
+                
+            except psycopg2.Error as e:
+                logger.error(f"Database error while assigning task to worker {worker_id}: {str(e)}")
+                connect.rollback()
+                
+    except Exception as e:
+        logger.error(f"Error in assignments: {str(e)}", exc_info=True)
+        raise
+    finally:
+        if 'connect' in locals():
+            connect.close()
 
-        # updates vitals status to working...
-        cursor.execute(f'''
-        UPDATE vitals SET status = '1' WHERE worker_id = '{worker[0]}';
-        ''')
-        connect.commit()
-
-
-# offline workers notification
 def death_notification(url, dead_workers, sender, receiver, password):
-    print('--- Sending Offline notification ---')
-    subject = '⚠️☠️🚨ONE OR MORE WORKERS ARE DOWN⚠️☠️🚨'
+    logger.info('Preparing offline worker notification...')
+    try:
+        connect = db_connect(url)
+        cursor = connect.cursor()
 
-    connect = psycopg2.connect(url)
-    cursor = connect.cursor()
+        cursor.execute('SELECT COUNT(*) FROM vitals WHERE status != \'-1\'')
+        available_workers = cursor.fetchall()[0][0]
+        logger.info(f"Current available workers: {available_workers}")
 
-    # gets number of offline workers
-    cursor.execute('''
-                SELECT COUNT(*) FROM vitals WHERE status != '-1';
-                ''')
-    available_workers = cursor.fetchall()[0][0]
+        if len(dead_workers) == 1:
+            message = f'Worker {dead_workers} is out of service.\n\n'
+        else:
+            message = f'{len(dead_workers)} workers are offline 🚧🔧\n\n'
+            for worker in dead_workers:
+                message += f'worker {worker},\n'
+            message += 'are out of service.\n\n'
 
-    # switch message depending on how many workers are offline
-    if len(dead_workers) == 1:
-        message = f'Worker {dead_workers} is out of service.\n\n'
-    else:
-        message = f'{len(dead_workers)} workers are offline 🚧🔧\n\n'
-        for worker in dead_workers:
-            message += f'worker {worker},\n'
-        message += 'are out of service.\n\n'
+        message += f'There are {available_workers} workers left online 🤖'
 
-    message += f'There are {available_workers} workers left online 🤖'
+        msg = MIMEText(message)
+        msg['Subject'] = '⚠️☠️🚨ONE OR MORE WORKERS ARE DOWN⚠️☠️🚨'
+        msg['From'] = sender
+        msg['To'] = receiver
 
-    # compose the message
-    msg = MIMEText(message)
-    msg['Subject'] = subject
-    msg['From'] = sender
-    msg['To'] = receiver # ', '.join(recipients)
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp_server:
+            smtp_server.login(sender, password)
+            smtp_server.sendmail(sender, receiver, msg.as_string())
+            logger.info(f"Successfully sent notification email about {len(dead_workers)} dead workers")
 
-    # send email
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp_server:
-        smtp_server.login(sender, password)
-        smtp_server.sendmail(sender, receiver, msg.as_string())
+    except smtplib.SMTPException as e:
+        logger.error(f"Failed to send email notification: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error in death_notification: {str(e)}", exc_info=True)
+    finally:
+        if 'connect' in locals():
+            connect.close()
 
-
-# reassign task if worker goes offline
 def reassignment(url, dead_w):
-    print('         Reassigning tasks...')
-    connect = psycopg2.connect(url)
-    cursor = connect.cursor()
+    logger.info('Starting task reassignment for dead workers...')
+    try:
+        connect = db_connect(url)
+        cursor = connect.cursor()
+        reset_mangas = []
 
-    # chapters to be reset to status 0
-    reset_mangas = []
+        for worker in dead_w:
+            try:
+                cursor.execute(
+                    "SELECT manga FROM dispatcher WHERE progress_status = '0' "
+                    f"AND worker_id = '{worker}'"
+                )
+                task = cursor.fetchall()
+                if task:
+                    reset_mangas.extend(task[0])
+                    logger.info(f"Found incomplete task {task[0][0]} from dead worker {worker}")
 
-    # check for tasks assigned to offline workers
-    for worker in dead_w:
-        cursor.execute(f'''
-                        SELECT manga FROM dispatcher WHERE progress_status = '0' and worker_id = '{worker}';
-                        ''')
-        task = cursor.fetchall()
-        # if the any task was assigned to an offline worker, execute the next lines
-        if task:
-            reset_mangas.append(task[0][0])
+            except psycopg2.Error as e:
+                logger.error(f"Error checking tasks for dead worker {worker}: {str(e)}")
+                continue
 
-    # reset manga status
-    if reset_mangas:
-        for manga in reset_mangas:
-            cursor.execute(f'''
-            UPDATE chapter_text SET status = '0' WHERE id = '{manga}';
-            ''')
-            connect.commit()
+        if reset_mangas:
+            for manga in reset_mangas:
+                try:
+                    cursor.execute(f"UPDATE chapter_text SET status = '0' WHERE id = '{manga}'")
+                    connect.commit()
+                    logger.info(f"Successfully reset manga {manga} for reassignment")
+                except psycopg2.Error as e:
+                    logger.error(f"Error resetting manga {manga}: {str(e)}")
+                    connect.rollback()
 
+    except Exception as e:
+        logger.error(f"Error in reassignment: {str(e)}", exc_info=True)
+        raise
+    finally:
+        if 'connect' in locals():
+            connect.close()
 
 def main():
-    print('Initiating Dispatcher...\n')
-    load_dotenv()
-    url = os.environ.get('URL')
-    email_password = os.environ.get('PASSWORD')
-    rep = 0
-    offline_history = []
-    workers_in_email = []
+    logger.info('Initiating Dispatcher...')
+    try:
+        load_dotenv()
+        url = os.environ.get('URL')
+        email_password = os.environ.get('PASSWORD')
+        
+        if not url:
+            logger.error("Database URL not found in environment variables")
+            raise ValueError("Missing DATABASE_URL environment variable")
+            
+        if not email_password:
+            logger.warning("Email password not found in environment variables")
 
-    dead_workers = check_vitals(url)
-
-    # if any workers are offline, run reassignment and notification
-    if type(dead_workers) == list:
-        reassignment(url, dead_workers)
-        for worker in dead_workers:
-            if worker not in offline_history:
-                workers_in_email.append(worker)
-        death_notification(url, workers_in_email, SENDER_EMAIL, RECEIVER_EMAIL, email_password)
+        rep = 0
+        offline_history = []
         workers_in_email = []
 
-    # runs the dispatcher indefinitely
-    while True:
-        assignments(url)
-        time.sleep(20)
-
-        # check for worker vitals roughly every 60 seconds
-        if rep == 3:
-            dead_workers = check_vitals(url)
-
-            # if any workers are offline, run reassignment and notification
-            if type(dead_workers) == list:
-                reassignment(url, dead_workers)
-                for worker in dead_workers:
-                    if worker not in offline_history:
-                        workers_in_email.append(worker)
-                death_notification(url, workers_in_email, SENDER_EMAIL, RECEIVER_EMAIL, email_password)
+        dead_workers = check_vitals(url)
+        
+        if isinstance(dead_workers, list):
+            reassignment(url, dead_workers)
+            new_dead_workers = [w for w in dead_workers if w not in offline_history]
+            if new_dead_workers:
+                workers_in_email.extend(new_dead_workers)
+                # if email_password:
+                    # death_notification(url, workers_in_email, SENDER_EMAIL, RECEIVER_EMAIL, email_password)
                 workers_in_email = []
-                for worker in dead_workers:
-                    offline_history.append(worker)
-            rep = 0
-        rep += 1
 
+        while True:
+            try:
+                assignments(url)
+                time.sleep(20)
+
+                if rep == 3:
+                    dead_workers = check_vitals(url)
+                    if isinstance(dead_workers, list):
+                        reassignment(url, dead_workers)
+                        new_dead_workers = [w for w in dead_workers if w not in offline_history]
+                        if new_dead_workers:
+                            workers_in_email.extend(new_dead_workers)
+                            # if email_password:
+                                # death_notification(url, workers_in_email, SENDER_EMAIL, RECEIVER_EMAIL, email_password)
+                            workers_in_email = []
+                            offline_history.extend(new_dead_workers)
+                    rep = 0
+                rep += 1
+
+            except Exception as e:
+                logger.error(f"Error in main loop: {str(e)}", exc_info=True)
+                time.sleep(10)  # Wait before retrying
+
+    except Exception as e:
+        logger.critical(f"Critical error in main: {str(e)}", exc_info=True)
+        raise
 
 if __name__ == '__main__':
     main()
