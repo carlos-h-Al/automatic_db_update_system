@@ -1,3 +1,4 @@
+import platform
 from dotenv import load_dotenv
 from nltk.corpus import words
 from nostril import nonsense
@@ -7,245 +8,313 @@ import pytesseract
 import datetime
 import psycopg2
 import requests
+import logging
 import time
 import nltk
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+from typing import List, Set
+import aiohttp
+import asyncio
+import contextlib
 
 
-# obtain worker id
-def generate_id(url):
-    connect = psycopg2.connect(url)
-    cursor = connect.cursor()
+if platform.system() == 'Windows':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    # set idle status - 0
-    status = 0
-    heart_beat = datetime.datetime.now().minute
+# Set up logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('worker.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
-    cursor.execute('''
-                    SELECT * FROM vitals
-                    ''')
-    result = cursor.fetchall()
-
-
-    # generate new unique id
-    if result:
-        cursor.execute('SELECT worker_id FROM vitals ORDER BY worker_id DESC LIMIT 1;')
-        last_id = int(cursor.fetchall()[0][0])
-        new_id = last_id + 1
-        formatted_id = f"{new_id:09d}"
-    else:
-        id = 0
-        formatted_id = f"{id:09d}"
-
-    # update vitals table
-    cursor.execute(f'''
-                    INSERT INTO vitals (worker_id, status, heartbeat) VALUES ('{formatted_id}', {status}, {heart_beat})
-                    ''')
-    connect.commit()
-
-    print(f'Worker: {formatted_id} successfully created')
-
-    return formatted_id
-
-
-# update own vitals
-def heartbeat(url, id):
-    print('Updating vitals ///')
-    # get current time for heartbeat
-    heart_beat = datetime.datetime.now().minute
-
-    # updates vitals table
-    connect = psycopg2.connect(url)
-    cursor = connect.cursor()
-    cursor.execute(f'''
-                    UPDATE vitals SET heartbeat = {heart_beat} WHERE worker_id = '{id}'
-                    ''')
-    connect.commit()
-
-
-# check for task assignment - returns chapter id to work on
-def check_task(url, id):
-    print('Checking for task...')
-    connect = psycopg2.connect(url)
-    cursor = connect.cursor()
-
-    # check for a task with the same worker id
-    cursor.execute(f'''
-                    SELECT manga FROM dispatcher WHERE worker_id = '{id}' AND progress_status = '0' LIMIT 1;
-                    ''')
-    manga_id = cursor.fetchall()
-
-    # if task is available, return chapter id
-    if manga_id:
-        return manga_id[0][0]
-    else:
-        return('empty')
-
-
-# extract text from image
-def extract_text_from_image(image_url):
+def db_connect(url):
+    """Establish database connection with error handling"""
     try:
-        response = requests.get(image_url)
-        response.raise_for_status()
-        image = Image.open(BytesIO(response.content))
-        text = pytesseract.image_to_string(image)
+        connect = psycopg2.connect(url)
+        return connect
+    except psycopg2.Error as e:
+        logger.error(f"Database connection failed: {str(e)}")
+        raise
 
-        return text
+# Cache frequently used data
+@lru_cache(maxsize=1000)
+def get_english_words() -> Set[str]:
+    """Cache English words for repeated use"""
+    return set(words.words())
 
+@lru_cache(maxsize=100)
+def is_sensible_string(s: str) -> bool:
+    """Cached check for sensible strings"""
+    english_words = get_english_words()
+    tokens = nltk.word_tokenize(s)
+    valid_word_count = sum(1 for token in tokens if token.lower() in english_words)
+    return valid_word_count / max(len(tokens), 1) >= 0.4
+
+# Compile regex patterns once
+SYMBOLS_PATTERN = re.compile(r'[@#$&€=°:()\{\}|+~/`\'\\><™©®\[\]¥*»%¢]')
+DIGITS_PATTERN = re.compile(r'\d+')
+
+async def extract_text_from_image(session: aiohttp.ClientSession, image_url: str) -> str:
+    """Asynchronously extract text from image"""
+    try:
+        async with session.get(image_url) as response:
+            if response.status != 200:
+                return f"Error: HTTP {response.status}"
+            
+            image_data = await response.read()
+            image = Image.open(BytesIO(image_data))
+            return pytesseract.image_to_string(image)
     except Exception as e:
         return f"Error: {str(e)}"
 
+def db_connect(url):
+    """Establish database connection with error handling"""
+    try:
+        connect = psycopg2.connect(url)
+        return connect
+    except psycopg2.Error as e:
+        logger.error(f"Database connection failed: {str(e)}")
+        raise
 
-# splits and formats the extracted text
-def text_formatter(text: str):
-    text = text.split('\n\n')
-    new_text = []
-    for i in text:
-        new_text.append(i.replace('\n', ' '))
-    return new_text
+# Compile regex patterns once
+SYMBOLS_PATTERN = re.compile(r'[@#$&€=°:()\{\}|+~/`\'\\><™©®\[\]¥*»%¢]')
+DIGITS_PATTERN = re.compile(r'\d+')
 
+async def extract_text_from_image(session: aiohttp.ClientSession, image_url: str) -> str:
+    """Asynchronously extract text from image"""
+    try:
+        async with session.get(image_url) as response:
+            if response.status != 200:
+                return f"Error: HTTP {response.status}"
+            
+            image_data = await response.read()
+            image = Image.open(BytesIO(image_data))
+            return pytesseract.image_to_string(image)
+    except Exception as e:
+        return f"Error: {str(e)}"
 
-# remove unwanted characters
-def char_remover(text):
-    symbols_to_remove = ['@', '#', '$', 
-                    '&', '€', '=', '°',
-                    ':', '(', ')', 
-                    '{', '}', '|', 
-                    '+', '~', '/', 
-                    '`', '‘', '\\', 
-                    '>', '<', '™', 
-                    '©', '®', '[', 
-                    ']', '¥', '*', 
-                    '»', '%', '¢']
-    
-    pattern = "[" + re.escape("".join(symbols_to_remove)) + "]"
+async def process_page(session: aiohttp.ClientSession, page: str, idx: int) -> tuple:
+    """Process a single page asynchronously"""
+    try:
+        # Extract text
+        extracted = await extract_text_from_image(session, page)
+        if extracted.startswith("Error:"):
+            return idx, None, f"PAGE {idx+1} ERROR: {extracted}"
 
-    for idx_1, k in enumerate(text):
-            text[idx_1] = re.sub(pattern, '', text[idx_1])
-            text[idx_1] = re.sub(r'\d', '', text[idx_1])
+        # Format and clean text
+        formatted = [i.replace('\n', ' ') for i in extracted.split('\n\n')]
+        if not formatted:
+            return idx, None, f"PAGE {idx+1} ERROR: Empty text after formatting"
 
-    return text
+        # Clean text
+        cleaned = [DIGITS_PATTERN.sub('', SYMBOLS_PATTERN.sub('', text)) for text in formatted]
+        cleaned = [txt.strip() for txt in cleaned if txt.strip()]  # Remove empty strings
 
+        if not cleaned:
+            return idx, None, f"PAGE {idx+1} ERROR: No text after cleaning"
 
-# check if the strings make sense in english
-def clean_text(txt):
-    unwanted_chars = [
-    ' ', '  ', '?', '!', '...', '.', ':', ',', '-', '_', '™', '“', '”', '—', "'", '"', '¢'
-    ]
+        return idx, cleaned, None
 
-    for idx_1, sentence in enumerate(txt):
-        for char in unwanted_chars:
-            sentence = sentence.replace(char, '')
+    except Exception as e:
+        return idx, None, f"PAGE {idx+1} ERROR: {str(e)}"
+
+async def extraction_engine(url: str, manga_id: str) -> str:
+    """Optimized extraction engine using async IO"""
+    try:
+        # Use a single connection for the database query
+        conn = db_connect(url)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT content FROM chapters WHERE id = '{manga_id}'")
+                web_pages = cursor.fetchall()[0][0]
+        finally:
+            conn.close()
+
+        async with aiohttp.ClientSession() as session:
+            # Process pages concurrently
+            tasks = [process_page(session, page, idx) for idx, page in enumerate(web_pages)]
+            results = await asyncio.gather(*tasks)
+
+        # Combine results
+        text_pieces = []
+        errors = []
         
-        # handle short sentences
-        if len(sentence) < 7:
-            chars = len(sentence)
-            difference = 8 - chars
-            new_text = sentence + ('a' * difference)
-            if nonsense(new_text):
-                txt.pop(idx_1)
+        for idx, text, error in sorted(results, key=lambda x: x[0]):
+            if error:
+                errors.append(error)
+            elif text:
+                text_pieces.extend(text)
+
+        if not text_pieces and errors:
+            return f"ERROR: {' | '.join(errors)}"
+        
+        if not text_pieces:
+            return "ERROR: All pages empty or invalid"
+
+        final_text = ' | '.join(f"new page - {piece}" for piece in text_pieces)
+        
+        if errors:
+            final_text += f" | PARTIAL SUCCESS - Some pages failed: {' | '.join(errors)}"
+
+        return final_text.replace("'", '')
+
+    except Exception as e:
+        return f"ERROR: Critical failure - {str(e)}"
+
+def generate_id(url):
+    logger.info("Generating new worker ID...")
+    connect = None
+    try:
+        connect = db_connect(url)
+        cursor = connect.cursor()
+
+        status = 0
+        heart_beat = datetime.datetime.now().minute
+
+        cursor.execute('SELECT * FROM vitals')
+        result = cursor.fetchall()
+
+        if result:
+            cursor.execute('SELECT worker_id FROM vitals ORDER BY worker_id DESC LIMIT 1;')
+            last_id = int(cursor.fetchall()[0][0])
+            new_id = last_id + 1
+            formatted_id = f"{new_id:09d}"
+            logger.info(f"Generated new worker ID: {formatted_id} (incremented from {last_id})")
         else:
-            if nonsense(sentence):
-                txt.pop(idx_1)
+            formatted_id = f"{0:09d}"
+            logger.info("Generated first worker ID: 000000000")
 
-    return txt
+        cursor.execute(
+            "INSERT INTO vitals (worker_id, status, heartbeat) "
+            f"VALUES ('{formatted_id}', {status}, {heart_beat})"
+        )
+        connect.commit()
+        logger.info(f"Successfully registered worker {formatted_id} in vitals table")
 
+        return formatted_id
 
-# double check if the strings make sense
-def is_sensible_string(s):
-    english_words = set(words.words())
-    tokens = nltk.word_tokenize(s)
-    valid_word_count = sum(1 for token in tokens if token.lower() in english_words)
+    except Exception as e:
+        logger.error(f"Error generating worker ID: {str(e)}", exc_info=True)
+        raise
+    finally:
+        if connect:
+            connect.close()
 
-    return valid_word_count / max(len(tokens), 1) >= 0.4
+def heartbeat(url, id):
+    logger.debug(f"Updating heartbeat for worker {id}")
+    connect = None
+    try:
+        heart_beat = datetime.datetime.now().minute
+        connect = db_connect(url)
+        cursor = connect.cursor()
+        
+        cursor.execute(f"UPDATE vitals SET heartbeat = {heart_beat} WHERE worker_id = '{id}'")
+        connect.commit()
+        logger.debug(f"Heartbeat updated to {heart_beat} for worker {id}")
 
+    except Exception as e:
+        logger.error(f"Failed to update heartbeat for worker {id}: {str(e)}")
+    finally:
+        if connect:
+            connect.close()
 
-# filter strings 
-def filter_sensible_strings(strings):
-    return [s for s in strings if is_sensible_string(s)]
+def check_task(url, id):
+    logger.info(f"Checking for tasks assigned to worker {id}")
+    connect = None
+    try:
+        connect = db_connect(url)
+        cursor = connect.cursor()
 
+        cursor.execute(
+            "SELECT manga FROM dispatcher "
+            f"WHERE worker_id = '{id}' AND progress_status = '0' LIMIT 1"
+        )
+        manga_id = cursor.fetchall()
 
-# complete text extraction function
-def extraction_engine(url, id):
-    connect = psycopg2.connect(url)
-    cursor = connect.cursor()
+        if manga_id:
+            logger.info(f"Found task: manga_id {manga_id[0][0]} for worker {id}")
+            return manga_id[0][0]
+        else:
+            logger.debug(f"No tasks found for worker {id}")
+            return 'empty'
 
-    cursor.execute(f'''
-                    SELECT chapters FROM chapters WHERE id = '{id}';
-                    ''')
-    
-    web_pages = cursor.fetchall()[0][0]
+    except Exception as e:
+        logger.error(f"Error checking tasks: {str(e)}")
+        return 'empty'
+    finally:
+        if connect:
+            connect.close()
 
-    text = []
-    temp = ''
-    final = ''
-
-    for page in web_pages:
-        text.append(filter_sensible_strings(clean_text(char_remover(text_formatter(extract_text_from_image(page))))))
-
-    # format extracted text before inserting it in the table
-    for page in text:
-        if page:
-            for string in page:
-                temp += 'new page - '
-                temp += string
-            final += temp
-            final += ' | '
-            temp = ''
-    
-    final = final.replace("'", '')
-
-    return final
-
-
-# add text to table - set worker status to idle
 def add_extracted_text(url, manga_id, text, worker_id):
-    connect = psycopg2.connect(url)
-    cursor = connect.cursor()
+    logger.info(f"Adding extracted text for manga {manga_id}")
+    connect = None
+    try:
+        connect = db_connect(url)
+        cursor = connect.cursor()
 
-    # update manga chapter status to complete, and insert extracted text
-    cursor.execute(f'''
-                    UPDATE chapter_text SET status = '2', text = '{text}' WHERE id = '{manga_id}';
-                    ''')
-    connect.commit()
+        cursor.execute(
+            f"UPDATE chapter_text SET status = '2', text = '{text}' "
+            f"WHERE id = '{manga_id}'"
+        )
+        cursor.execute(
+            f"UPDATE vitals SET status = '0' WHERE worker_id = '{worker_id}'"
+        )
+        cursor.execute(
+            "UPDATE dispatcher SET progress_status = '1' "
+            f"WHERE worker_id = '{worker_id}' AND manga = '{manga_id}'"
+        )
+        connect.commit()
+        logger.info(f"Successfully updated database for manga {manga_id}")
 
-    # update worker status to idle once text has been added
-    cursor.execute(f'''
-                    UPDATE vitals SET status = '0' WHERE worker_id = '{worker_id}';
-                    ''')
-    connect.commit()
+    except Exception as e:
+        logger.error(f"Error adding extracted text: {str(e)}", exc_info=True)
+        raise
+    finally:
+        if connect:
+            connect.close()
 
-    # update dispatcher task status to complete once text has been added
-    cursor.execute(f'''
-                    UPDATE dispatcher SET progress_status = '1' WHERE worker_id = '{worker_id}' AND manga = '{manga_id}';
-                    ''')
-    connect.commit()
+async def main():
+    logger.info("Starting worker process")
+    try:
+        load_dotenv()
+        url = os.getenv('URL')
+        
+        if not url:
+            raise ValueError("Missing DATABASE_URL environment variable")
+        
+        worker_id = generate_id(url)
+        logger.info(f"Worker {worker_id} initialized and ready")
 
+        while True:
+            try:
+                heartbeat(url, worker_id)
+                task = check_task(url, worker_id)
 
-def main():
-    load_dotenv()
-    url = os.environ.get('URL')
+                if task != 'empty':
+                    logger.info(f"Processing task for manga {task}")
+                    extract = await extraction_engine(url, task)
+                    add_extracted_text(url, task, extract, worker_id)
+                    logger.info(f"Successfully completed task for manga {task}")
+                else:
+                    await asyncio.sleep(20)
 
-    worker_id = generate_id(url)
+            except Exception as e:
+                logger.error(f"Error in main loop: {str(e)}", exc_info=True)
+                await asyncio.sleep(60)
 
-    while True:
-        ''' Update every 20 seconds, except when working... '''
-        heartbeat(url, worker_id)
-        # manga id
-        task = check_task(url, worker_id)
-
-        if task != 'empty':
-            print('Executing task...')
-            # complete task
-            extract = extraction_engine(url, task)
-            # insert text
-            add_extracted_text(url, task, extract, worker_id)
-        else:
-            print('     No task found +')
-
-        time.sleep(20)
-
+    except Exception as e:
+        logger.critical(f"Critical error in main: {str(e)}", exc_info=True)
+        raise
 
 if __name__ == '__main__':
-    main()
+    if platform.system() == 'Windows':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.run(main())

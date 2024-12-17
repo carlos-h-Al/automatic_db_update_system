@@ -38,6 +38,7 @@ RUN adduser \
 RUN apt-get update && apt-get install -y \
     libpq-dev \
     gcc \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 RUN --mount=type=cache,target=/root/.cache/pip \

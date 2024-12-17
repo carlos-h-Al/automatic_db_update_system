@@ -1,0 +1,74 @@
+2024-12-16 23:59:15,427 - INFO - Starting worker process
+2024-12-16 23:59:15,428 - CRITICAL - Critical error in main: module 'psycopg2' has no attribute 'pool'
+Traceback (most recent call last):
+  File "C:\Users\otomo\OneDrive\Desktop\extract\text_extraction_automation\workers\workers.py", line 298, in main
+    init_db_pool(url)
+  File "C:\Users\otomo\OneDrive\Desktop\extract\text_extraction_automation\workers\workers.py", line 176, in init_db_pool
+    db_pool = psycopg2.pool.SimpleConnectionPool(min_connections, max_connections, url)
+              ^^^^^^^^^^^^^
+AttributeError: module 'psycopg2' has no attribute 'pool'
+2024-12-17 00:00:37,001 - INFO - Starting worker process
+2024-12-17 00:00:37,002 - INFO - Generating new worker ID...
+2024-12-17 00:00:37,182 - INFO - Generated new worker ID: 000000040 (incremented from 39)
+2024-12-17 00:00:37,210 - INFO - Successfully registered worker 000000040 in vitals table
+2024-12-17 00:00:37,212 - INFO - Worker 000000040 initialized and ready
+2024-12-17 00:00:37,376 - INFO - Checking for tasks assigned to worker 000000040
+2024-12-17 00:00:57,668 - INFO - Checking for tasks assigned to worker 000000040
+2024-12-17 00:00:57,807 - INFO - Found task: manga_id 10cfaef7-5b7a-4f84-bb62-88a2a88451b2 for worker 000000040
+2024-12-17 00:00:57,807 - INFO - Processing task for manga 10cfaef7-5b7a-4f84-bb62-88a2a88451b2
+2024-12-17 00:00:57,936 - INFO - Adding extracted text for manga 10cfaef7-5b7a-4f84-bb62-88a2a88451b2
+2024-12-17 00:00:58,114 - INFO - Successfully updated database for manga 10cfaef7-5b7a-4f84-bb62-88a2a88451b2
+2024-12-17 00:00:58,114 - INFO - Successfully completed task for manga 10cfaef7-5b7a-4f84-bb62-88a2a88451b2
+2024-12-17 00:00:58,271 - INFO - Checking for tasks assigned to worker 000000040
+2024-12-17 00:01:18,565 - INFO - Checking for tasks assigned to worker 000000040
+2024-12-17 00:01:18,708 - INFO - Found task: manga_id 0aa1312e-ba0a-46a8-a4ea-e3272ed02a5b for worker 000000040
+2024-12-17 00:01:18,708 - INFO - Processing task for manga 0aa1312e-ba0a-46a8-a4ea-e3272ed02a5b
+2024-12-17 00:01:18,858 - INFO - Adding extracted text for manga 0aa1312e-ba0a-46a8-a4ea-e3272ed02a5b
+2024-12-17 00:01:19,063 - INFO - Successfully updated database for manga 0aa1312e-ba0a-46a8-a4ea-e3272ed02a5b
+2024-12-17 00:01:19,063 - INFO - Successfully completed task for manga 0aa1312e-ba0a-46a8-a4ea-e3272ed02a5b
+2024-12-17 00:01:19,237 - INFO - Checking for tasks assigned to worker 000000040
+2024-12-17 00:01:19,383 - INFO - Found task: manga_id 05826cbc-33b0-4359-82ac-fdac33951efb for worker 000000040
+2024-12-17 00:01:19,384 - INFO - Processing task for manga 05826cbc-33b0-4359-82ac-fdac33951efb
+2024-12-17 00:01:19,524 - INFO - Adding extracted text for manga 05826cbc-33b0-4359-82ac-fdac33951efb
+2024-12-17 00:01:19,708 - INFO - Successfully updated database for manga 05826cbc-33b0-4359-82ac-fdac33951efb
+2024-12-17 00:01:19,708 - INFO - Successfully completed task for manga 05826cbc-33b0-4359-82ac-fdac33951efb
+2024-12-17 00:01:19,841 - INFO - Checking for tasks assigned to worker 000000040
+2024-12-17 00:01:40,136 - INFO - Checking for tasks assigned to worker 000000040
+2024-12-17 00:01:40,267 - INFO - Found task: manga_id 31e9630b-bda6-4638-a67c-52f31404c353 for worker 000000040
+2024-12-17 00:01:40,267 - INFO - Processing task for manga 31e9630b-bda6-4638-a67c-52f31404c353
+2024-12-17 00:01:40,398 - INFO - Adding extracted text for manga 31e9630b-bda6-4638-a67c-52f31404c353
+2024-12-17 00:01:40,566 - INFO - Successfully updated database for manga 31e9630b-bda6-4638-a67c-52f31404c353
+2024-12-17 00:01:40,567 - INFO - Successfully completed task for manga 31e9630b-bda6-4638-a67c-52f31404c353
+2024-12-17 00:01:40,714 - INFO - Checking for tasks assigned to worker 000000040
+2024-12-17 00:03:09,915 - INFO - Starting worker process
+2024-12-17 00:03:09,916 - INFO - Generating new worker ID...
+2024-12-17 00:03:10,060 - INFO - Generated new worker ID: 000000041 (incremented from 40)
+2024-12-17 00:03:10,094 - INFO - Successfully registered worker 000000041 in vitals table
+2024-12-17 00:03:10,094 - INFO - Worker 000000041 initialized and ready
+2024-12-17 00:03:10,262 - INFO - Checking for tasks assigned to worker 000000041
+2024-12-17 00:03:30,563 - INFO - Checking for tasks assigned to worker 000000041
+2024-12-17 00:03:30,710 - INFO - Found task: manga_id 7c4c48f1-c52a-4355-b034-2c3c554df48d for worker 000000041
+2024-12-17 00:03:30,711 - INFO - Processing task for manga 7c4c48f1-c52a-4355-b034-2c3c554df48d
+2024-12-17 00:03:51,725 - INFO - Adding extracted text for manga 7c4c48f1-c52a-4355-b034-2c3c554df48d
+2024-12-17 00:03:51,856 - ERROR - Error adding extracted text: syntax error at or near "s"
+LINE 1: ... 1 ERROR: Error: tesseract is not installed or it's not in y...
+                                                             ^
+Traceback (most recent call last):
+  File "C:\Users\otomo\OneDrive\Desktop\extract\text_extraction_automation\workers\workers.py", line 242, in add_extracted_text
+    cursor.execute(
+psycopg2.errors.SyntaxError: syntax error at or near "s"
+LINE 1: ... 1 ERROR: Error: tesseract is not installed or it's not in y...
+                                                             ^
+
+2024-12-17 00:03:51,857 - ERROR - Error in main loop: syntax error at or near "s"
+LINE 1: ... 1 ERROR: Error: tesseract is not installed or it's not in y...
+                                                             ^
+Traceback (most recent call last):
+  File "C:\Users\otomo\OneDrive\Desktop\extract\text_extraction_automation\workers\workers.py", line 283, in main
+    add_extracted_text(url, task, extract, worker_id)
+  File "C:\Users\otomo\OneDrive\Desktop\extract\text_extraction_automation\workers\workers.py", line 242, in add_extracted_text
+    cursor.execute(
+psycopg2.errors.SyntaxError: syntax error at or near "s"
+LINE 1: ... 1 ERROR: Error: tesseract is not installed or it's not in y...
+                                                             ^
+

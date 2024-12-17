@@ -6,3 +6,4 @@ git+https://github.com/casics/nostril.git
 Pillow
 pytesseract
 requests
+aiohttp
